@@ -1,0 +1,248 @@
+# Imagen API 接口文档
+
+## 节点信息
+
+### Host地址
+- **Host(海外)**: `https://api.grsai.com`
+- **Host(国内直连)**: `https://grsai.dakka.com.cn`
+
+### 使用方式
+使用方式：Host + 接口路径
+
+示例：
+```
+https://grsai.dakka.com.cn/v1/draw/imagen
+```
+
+---
+
+## 支持的模型
+
+1. **imagen-4-ultra** - 标准版本
+
+---
+
+## 接口列表
+
+### 1. Imagen绘画接口
+
+**接口地址:** `/v1/draw/imagen`
+
+**请求方式:** POST
+
+**响应方式:** stream 或 回调接口
+
+**请求头 Headers:**
+```json
+{
+  "Content-Type": "application/json",
+  "Authorization": "Bearer apikey"
+}
+```
+
+**请求参数 (JSON):**
+```json
+{
+  "model": "imagen-4-ultra",
+  "prompt": "提示词",
+  "aspectRatio": "1:1",
+  "webHook": "https://example.com/callback",
+  "shutProgress": false
+}
+```
+
+**参数说明:**
+
+- **model**（必填）
+  - 类型: string
+  - 示例: "imagen-4-ultra"
+  - 描述: 支持模型: imagen-4-ultra
+
+- **prompt**（必填）
+  - 类型: string
+  - 示例: "一只可爱的猫咪在草地上玩耍"
+  - 描述: 提示词
+
+- **aspectRatio**（必填）
+  - 类型: string
+  - 示例: "1:1"
+  - 描述: 支持的图像比例, 1:1, 16:9, 9:16, 4:3, 3:4
+
+- **webHook**（选填）
+  - 类型: string
+  - 示例: "https://your-webhook-url.com/callback"
+  - 描述: 进度与结果的回调链接
+  - 接口默认以Stream流式响应进行回复
+  - 如果填了webHook，进度与结果则以Post请求回调地址的方式进行回复
+  - 请求头: Content-Type: application/json
+  - 如果不使用回调，而使用轮询result接口方式获取结果，需要接口立即返回一个id，则webHook参数填"-1"，那么会立即返回一个id
+
+- **shutProgress**（选填）
+  - 类型: boolean
+  - 示例: false
+  - 描述: 关闭进度回复，直接回复最终结果,建议搭配webHook使用
+  - 默认: false
+
+**webHook结果** (请求后该结果会返回一个id，用于对应回调数据，使用流式响应请跳过该步骤):
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "id": "id"
+  }
+}
+```
+
+**webHook结果参数说明** (使用流式响应请跳过该步骤):
+
+- **code**
+  - 类型: number
+  - 示例: 0
+  - 描述: 状态码：0为成功
+
+- **msg**
+  - 类型: string
+  - 示例: "success"
+  - 描述: 状态信息
+
+- **data**
+  - 类型: object
+  - 描述: 数据
+
+- **data.id**
+  - 类型: string
+  - 示例: "f44bcf50-f2d0-4c26-a467-26f2014a771b"
+  - 描述: 程序任务id，对应回调数据
+
+**响应参数 (JSON)** (流式响应与webHook响应的参数):
+```json
+{
+  "id": "xxxxx",
+  "results": [
+    "https://example.com/generated-image.jpg"
+  ],
+  "progress": 100,
+  "status": "succeeded",
+  "failure_reason": "",
+  "error": ""
+}
+```
+
+**响应参数说明:**
+
+- **id**
+  - 类型: string
+  - 示例: "f44bcf50-f2d0-4c26-a467-26f2014a771b"
+  - 描述: Id (webHook回调可以用该id来对应数据)
+
+- **results**
+  - 类型: array
+  - 示例: ["https://example.com/generated-image.jpg"]
+  - 描述: 结果图片的URL（有效期为2小时）
+
+- **progress**
+  - 类型: number
+  - 示例: 100
+  - 描述: 任务进度, 0~100
+
+- **status**
+  - 类型: string
+  - 示例: "succeeded"
+  - 描述: 任务状态
+    - "running": 进行中
+    - "succeeded": 成功
+    - "failed": 失败
+
+- **failure_reason**
+  - 类型: string
+  - 示例: "error"
+  - 描述: 失败原因
+    - "output_moderation": 输出违规
+    - "input_moderation": 输入违规
+    - "error": 其他错误
+    - 当绘画失败时，会返还积分
+    - 提示：当触发"error"时，可尝试重新提交任务来确保系统稳定性。
+
+- **error**
+  - 类型: string
+  - 示例: "Invalid input parameters"
+  - 描述: 失败详细信息
+
+---
+
+### 2. 获取结果接口
+
+**接口地址:** `/v1/draw/result`
+
+**请求方式:** POST
+
+**描述:** 另外提供一个接口用于单独获取结果的接口 (如有单独获取结果的需求，可以使用该接口)
+
+**请求参数:**
+```json
+{
+  "id": "xxxxx"
+}
+```
+
+**响应结果:**
+```json
+{
+  "code": 0,
+  "data": {
+    "id": "xxxxx",
+    "results": [
+      "https://example.com/generated-image.jpg"
+    ],
+    "progress": 100,
+    "status": "succeeded",
+    "failure_reason": "",
+    "error": ""
+  },
+  "msg": "success"
+}
+```
+
+**响应参数说明:**
+
+- **code**
+  - 类型: number
+  - 示例: 0
+  - 描述: 状态码：0成功, -22任务不存在
+
+- **msg**
+  - 类型: string
+  - 示例: "success"
+  - 描述: 状态信息
+
+- **data**
+  - 类型: object
+  - 描述: 绘画结果，请参考上方的绘画结果的数据格式
+
+---
+
+## 使用场景说明
+
+### 场景1: 流式响应
+- 不设置 `webHook` 参数，接口会以Stream流式响应返回结果
+- 实时接收进度和最终结果
+
+### 场景2: WebHook回调
+- 设置 `webHook` 参数为回调地址
+- 接口立即返回任务id
+- 进度和结果通过POST请求回调到指定地址
+
+### 场景3: 轮询获取结果
+- 设置 `webHook` 参数为 `"-1"`
+- 接口立即返回任务id
+- 使用 `/v1/draw/result` 接口轮询获取结果
+
+---
+
+## 注意事项
+
+1. **图片有效期**: 生成的图片URL有效期为2小时
+2. **积分返还**: 当报错或者违规不出图时，会返还积分
+3. **错误处理**: 当触发"error"时，可尝试重新提交任务来确保系统稳定性
+4. **认证**: 需要在请求头中携带 `Authorization: Bearer apikey`，其中 `apikey` 需要替换为实际的API密钥

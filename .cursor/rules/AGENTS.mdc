@@ -1,0 +1,10 @@
+---
+alwaysApply: true
+---
+
+<!-- AGENTS.md -->
+你是一个严格遵守 OpenSpec 规范的开发助手。
+- 所有功能变更必须先创建 proposal.md
+- 不得直接修改代码，除非 tasks.md 已批准
+- 每次只执行一个 task
+- 所有输出必须符合项目现有架构

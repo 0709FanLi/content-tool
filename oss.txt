@@ -1,0 +1,608 @@
+# 阿里云OSS (oss-cn-shanghai) 使用文档
+
+本文档详细介绍如何在项目中使用阿里云OSS（华东2上海区域）进行文件上传、下载、删除等操作。
+
+## 配置环境变量
+
+### 必需的环境变量
+
+```bash
+# 阿里云AccessKey（必须配置）
+OSS_ACCESS_KEY_ID=your_access_key_id
+OSS_ACCESS_KEY_SECRET=your_access_key_secret
+
+# OSS Bucket配置（必须配置）
+OSS_BUCKET_NAME=your-bucket-name
+
+# 可选配置（有默认值）
+OSS_ENDPOINT=https://oss-cn-shanghai.aliyuncs.com  # 华东2上海
+OSS_PUBLIC_READ=true  # Bucket是否为公共读
+OSS_URL_EXPIRE_SECONDS=3600  # 签名URL有效期（秒）
+OSS_MAX_FILE_SIZE=52428800  # 最大文件大小（50MB）
+```
+
+## 安装依赖
+
+```bash
+pip install oss2
+```
+
+## 核心服务类
+
+### OSSService类定义
+
+```python
+import os
+import uuid
+from datetime import datetime
+from io import BytesIO
+from typing import Any, Dict, List, Optional, BinaryIO
+from urllib.parse import quote
+
+import oss2
+from oss2.exceptions import OssError
+
+class OSSService:
+    """阿里云OSS服务类."""
+
+    def __init__(self) -> None:
+        """初始化OSS服务."""
+        self.access_key_id = os.getenv("OSS_ACCESS_KEY_ID", "")
+        self.access_key_secret = os.getenv("OSS_ACCESS_KEY_SECRET", "")
+        self.endpoint = os.getenv("OSS_ENDPOINT", "https://oss-cn-shanghai.aliyuncs.com")
+        self.bucket_name = os.getenv("OSS_BUCKET_NAME", "")
+        self.public_read = os.getenv("OSS_PUBLIC_READ", "true").lower() == "true"
+        self.url_expire_seconds = int(os.getenv("OSS_URL_EXPIRE_SECONDS", "3600"))
+        self.max_file_size = int(os.getenv("OSS_MAX_FILE_SIZE", str(50 * 1024 * 1024)))
+
+        # 检查配置是否完整
+        self._is_configured = bool(
+            self.access_key_id and
+            self.access_key_secret and
+            self.bucket_name
+        )
+
+        # 初始化OSS客户端
+        self.auth = None
+        self.bucket = None
+
+        if self._is_configured:
+            try:
+                self.auth = oss2.Auth(self.access_key_id, self.access_key_secret)
+                self.bucket = oss2.Bucket(
+                    self.auth,
+                    self.endpoint,
+                    self.bucket_name
+                )
+                print(f"OSSService初始化完成: bucket={self.bucket_name}")
+            except Exception as e:
+                print(f"OSS初始化失败: {e}")
+                self._is_configured = False
+        else:
+            print("OSS配置不完整，请设置必要的环境变量")
+
+    def _ensure_configured(self) -> None:
+        """确保OSS已配置，否则抛出异常."""
+        if not self._is_configured or not self.bucket:
+            raise Exception("OSS服务未配置，请检查环境变量")
+
+    def _generate_object_key(
+        self,
+        category: str,
+        filename: str,
+        use_date_path: bool = True
+    ) -> str:
+        """生成OSS对象键（文件路径）."""
+        # 生成唯一ID
+        unique_id = uuid.uuid4().hex[:8]
+
+        # 处理文件名（保留扩展名）
+        name, ext = os.path.splitext(filename)
+        safe_filename = f"{unique_id}_{name}{ext}"
+
+        # 构建路径
+        if use_date_path:
+            now = datetime.now()
+            date_path = now.strftime("%Y/%m/%d")
+            object_key = f"{category}/{date_path}/{safe_filename}"
+        else:
+            object_key = f"{category}/{safe_filename}"
+
+        return object_key
+
+    def _get_public_url(self, object_key: str) -> str:
+        """获取公共访问URL."""
+        return f"https://{self.bucket_name}.{self.endpoint.replace('https://', '')}/{quote(object_key)}"
+
+    def _get_signed_url(self, object_key: str, expires: int = None) -> str:
+        """获取带签名的URL."""
+        if expires is None:
+            expires = self.url_expire_seconds
+
+        try:
+            url = self.bucket.sign_url('GET', object_key, expires)
+            return url
+        except Exception as e:
+            print(f"生成签名URL失败: {e}")
+            return self._get_public_url(object_key)
+```
+
+## 主要方法
+
+### 1. 上传文件
+
+#### upload_file - 直接上传文件流
+
+```python
+def upload_file(
+    self,
+    file_data: BinaryIO,
+    filename: str,
+    category: str = "uploads",
+    content_type: Optional[str] = None
+) -> Dict[str, Any]:
+    """上传文件到OSS.
+
+    Args:
+        file_data: 文件数据流
+        filename: 原始文件名
+        category: 文件类别 (images/videos/references)
+        content_type: 文件MIME类型
+
+    Returns:
+        包含文件信息的字典
+    """
+    self._ensure_configured()
+
+    # 读取文件内容
+    file_content = file_data.read()
+    file_size = len(file_content)
+
+    # 检查文件大小
+    if file_size > self.max_file_size:
+        raise Exception(f"文件大小超过限制: {file_size / 1024 / 1024:.2f}MB")
+
+    # 生成对象键
+    object_key = self._generate_object_key(category, filename)
+
+    # 设置请求头
+    headers = {}
+    if content_type:
+        headers['Content-Type'] = content_type
+
+    # 上传文件
+    result = self.bucket.put_object(
+        object_key,
+        file_content,
+        headers=headers
+    )
+
+    # 获取访问URL
+    if self.public_read:
+        url = self._get_public_url(object_key)
+    else:
+        url = self._get_signed_url(object_key)
+
+    return {
+        "object_key": object_key,
+        "url": url,
+        "size": file_size,
+        "content_type": content_type,
+        "etag": result.etag,
+        "bucket": self.bucket_name
+    }
+```
+
+**使用示例：**
+```python
+import io
+
+# 上传图片文件
+with open("image.jpg", "rb") as f:
+    result = oss_service.upload_file(
+        file_data=f,
+        filename="image.jpg",
+        category="images",
+        content_type="image/jpeg"
+    )
+    print(f"上传成功: {result['url']}")
+
+# 上传字节数据
+image_bytes = b"fake image data"
+result = oss_service.upload_file(
+    file_data=io.BytesIO(image_bytes),
+    filename="test.png",
+    category="images"
+)
+```
+
+### 2. 从URL上传文件
+
+#### upload_from_url - 从网络URL下载并上传
+
+```python
+import asyncio
+import httpx
+from io import BytesIO
+
+async def upload_from_url(
+    self,
+    url: str,
+    filename: str,
+    category: str = "images"
+) -> Dict[str, Any]:
+    """从URL下载文件并上传到OSS（异步）.
+
+    Args:
+        url: 源文件URL
+        filename: 保存的文件名
+        category: 文件类别 (images/videos/references)
+
+    Returns:
+        包含文件信息的字典
+    """
+    async with httpx.AsyncClient(timeout=300.0) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+
+        file_content = response.content
+        content_type = response.headers.get('Content-Type')
+
+        print(f"文件下载完成，大小: {len(file_content) / 1024 / 1024:.2f}MB")
+
+        # 上传到OSS
+        file_stream = BytesIO(file_content)
+
+        result = self.upload_file(
+            file_stream,
+            filename,
+            category,
+            content_type
+        )
+
+        return result
+```
+
+**使用示例：**
+```python
+import asyncio
+
+async def main():
+    # 从网络URL上传视频
+    result = await oss_service.upload_from_url(
+        url="https://example.com/video.mp4",
+        filename="my_video.mp4",
+        category="videos"
+    )
+    print(f"上传成功: {result['url']}")
+
+asyncio.run(main())
+```
+
+### 3. 删除文件
+
+#### delete_file - 删除OSS文件
+
+```python
+def delete_file(self, object_key: str) -> bool:
+    """删除OSS文件.
+
+    Args:
+        object_key: OSS对象键
+
+    Returns:
+        是否删除成功
+    """
+    self._ensure_configured()
+
+    try:
+        self.bucket.delete_object(object_key)
+        print(f"文件删除成功: {object_key}")
+        return True
+
+    except OssError as e:
+        raise Exception(f"OSS删除失败: {e.code} - {e.message}")
+```
+
+**使用示例：**
+```python
+# 删除文件
+success = oss_service.delete_file("images/2024/01/01/uuid_filename.jpg")
+print(f"删除成功: {success}")
+```
+
+### 4. 列举文件
+
+#### list_files - 列举OSS文件
+
+```python
+def list_files(
+    self,
+    prefix: str = "",
+    max_keys: int = 100
+) -> List[Dict[str, Any]]:
+    """列举OSS文件.
+
+    Args:
+        prefix: 文件前缀（路径）
+        max_keys: 最大返回数量
+
+    Returns:
+        文件列表
+    """
+    self._ensure_configured()
+
+    result = self.bucket.list_objects(
+        prefix=prefix,
+        max_keys=max_keys
+    )
+
+    files = []
+    for obj in result.object_list:
+        file_info = {
+            "object_key": obj.key,
+            "size": obj.size,
+            "last_modified": obj.last_modified,
+            "etag": obj.etag,
+            "url": self._get_public_url(obj.key) if self.public_read else self._get_signed_url(obj.key)
+        }
+        files.append(file_info)
+
+    return files
+```
+
+**使用示例：**
+```python
+# 列举images目录下的所有文件
+files = oss_service.list_files(prefix="images/", max_keys=50)
+for file in files:
+    print(f"{file['object_key']}: {file['size']} bytes - {file['url']}")
+```
+
+### 5. 下载文件
+
+#### download_file - 下载文件
+
+```python
+def download_file(self, url: str) -> bytes:
+    """下载文件（通过URL或object_key）.
+
+    Args:
+        url: OSS文件URL或object_key
+
+    Returns:
+        文件内容（字节）
+    """
+    # 从URL中提取object_key
+    if url.startswith('http'):
+        # 检查是否是我们自己的OSS bucket
+        is_our_oss = self.bucket_name in url and '.aliyuncs.com/' in url
+
+        if not is_our_oss:
+            # 不是我们的OSS，直接通过HTTP下载
+            import httpx
+            response = httpx.get(url, timeout=60.0)
+            response.raise_for_status()
+            return response.content
+
+        # 是我们自己的OSS，从OSS链接中提取object_key
+        parts = url.split('.aliyuncs.com/')
+        if len(parts) > 1:
+            object_key = parts[1].split('?')[0]  # 移除查询参数
+        else:
+            raise Exception(f"无法从URL提取object_key: {url}")
+    else:
+        # 直接是object_key
+        object_key = url
+
+    # 从OSS下载文件
+    self._ensure_configured()
+    result = self.bucket.get_object(object_key)
+    file_content = result.read()
+
+    return file_content
+```
+
+**使用示例：**
+```python
+# 下载文件
+file_content = oss_service.download_file("images/2024/01/01/uuid_filename.jpg")
+
+# 保存到本地
+with open("downloaded_image.jpg", "wb") as f:
+    f.write(file_content)
+
+# 从URL下载
+file_content = oss_service.download_file("https://your-bucket.oss-cn-shanghai.aliyuncs.com/path/to/file.jpg")
+```
+
+### 6. 获取文件URL
+
+#### get_file_url - 获取文件访问URL
+
+```python
+def get_file_url(
+    self,
+    object_key: str,
+    expires: int = None
+) -> str:
+    """获取文件访问URL.
+
+    Args:
+        object_key: OSS对象键
+        expires: 过期时间（秒）
+
+    Returns:
+        文件访问URL
+    """
+    if self.public_read:
+        return self._get_public_url(object_key)
+    else:
+        return self._get_signed_url(object_key, expires)
+```
+
+**使用示例：**
+```python
+# 获取公共读Bucket的文件URL
+url = oss_service.get_file_url("images/photo.jpg")
+
+# 获取私有Bucket的签名URL（1小时有效）
+url = oss_service.get_file_url("videos/movie.mp4", expires=3600)
+```
+
+### 7. 健康检查
+
+#### health_check - OSS服务健康检查
+
+```python
+def health_check(self) -> bool:
+    """健康检查.
+
+    Returns:
+        服务是否可用
+    """
+    if not self._is_configured or not self.bucket:
+        return False
+    try:
+        # 尝试列举文件（限制1个）
+        self.bucket.list_objects(max_keys=1)
+        return True
+    except Exception as e:
+        print(f"OSS健康检查失败: {e}")
+        return False
+```
+
+**使用示例：**
+```python
+# 检查OSS服务是否可用
+is_healthy = oss_service.health_check()
+print(f"OSS服务状态: {'正常' if is_healthy else '异常'}")
+```
+
+## 完整使用示例
+
+### 初始化OSS服务
+
+```python
+import os
+
+# 设置环境变量
+os.environ["OSS_ACCESS_KEY_ID"] = "your_access_key_id"
+os.environ["OSS_ACCESS_KEY_SECRET"] = "your_access_key_secret"
+os.environ["OSS_BUCKET_NAME"] = "your-bucket-name"
+os.environ["OSS_ENDPOINT"] = "https://oss-cn-shanghai.aliyuncs.com"
+os.environ["OSS_PUBLIC_READ"] = "true"  # 设置为公共读
+
+# 初始化服务
+oss_service = OSSService()
+```
+
+### 图片上传下载完整流程
+
+```python
+import asyncio
+import io
+
+async def image_workflow():
+    """图片上传下载完整流程示例"""
+
+    # 1. 上传图片
+    fake_image_data = b"fake image content"
+    upload_result = oss_service.upload_file(
+        file_data=io.BytesIO(fake_image_data),
+        filename="test_image.jpg",
+        category="images",
+        content_type="image/jpeg"
+    )
+    print(f"图片上传成功: {upload_result['url']}")
+
+    # 2. 获取文件URL
+    object_key = upload_result['object_key']
+    file_url = oss_service.get_file_url(object_key)
+    print(f"文件访问URL: {file_url}")
+
+    # 3. 下载文件
+    downloaded_content = oss_service.download_file(object_key)
+    print(f"下载成功，文件大小: {len(downloaded_content)} bytes")
+
+    # 4. 列举文件
+    files = oss_service.list_files(prefix="images/", max_keys=10)
+    print(f"images目录下有 {len(files)} 个文件")
+
+    # 5. 删除文件
+    delete_success = oss_service.delete_file(object_key)
+    print(f"文件删除成功: {delete_success}")
+
+# 运行异步函数
+asyncio.run(image_workflow())
+```
+
+### 视频上传处理流程
+
+```python
+import asyncio
+
+async def video_workflow():
+    """视频上传处理流程示例"""
+
+    # 从网络URL上传视频
+    video_url = "https://example.com/sample_video.mp4"
+
+    try:
+        upload_result = await oss_service.upload_from_url(
+            url=video_url,
+            filename="sample_video.mp4",
+            category="videos"
+        )
+
+        print(f"视频上传成功: {upload_result['url']}")
+        print(f"文件大小: {upload_result['size'] / 1024 / 1024:.2f} MB")
+        print(f"OSS路径: {upload_result['object_key']}")
+
+    except Exception as e:
+        print(f"视频上传失败: {e}")
+
+# 运行异步函数
+asyncio.run(video_workflow())
+```
+
+## 错误处理
+
+OSS操作可能出现的错误：
+
+```python
+from oss2.exceptions import OssError
+
+try:
+    result = oss_service.upload_file(file_data, filename, "images")
+except OssError as e:
+    print(f"OSS错误: {e.code} - {e.message}")
+except ValueError as e:
+    print(f"参数错误: {e}")
+except Exception as e:
+    print(f"未知错误: {e}")
+```
+
+## 性能优化建议
+
+1. **大文件上传**: 对于大文件，建议使用分片上传
+2. **并发上传**: 多个小文件可以并发上传
+3. **缓存URL**: 对于频繁访问的文件，可以缓存签名URL
+4. **定期清理**: 删除不需要的临时文件
+
+## 安全注意事项
+
+1. **AccessKey保护**: 不要在代码中硬编码AccessKey，使用环境变量
+2. **签名URL**: 私有Bucket使用签名URL，并设置合理的过期时间
+3. **权限控制**: 根据需要设置Bucket权限和对象ACL
+4. **网络安全**: 在生产环境中使用HTTPS传输
+
+## 依赖包
+
+```bash
+# requirements.txt
+oss2>=2.18.0
+httpx>=0.24.0  # 用于异步HTTP请求
+```
+
+这个文档提供了阿里云OSS (oss-cn-shanghai) 的完整使用指南，可以直接在其他项目中使用。
